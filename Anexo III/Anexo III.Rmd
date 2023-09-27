@@ -1,0 +1,735 @@
+---
+title: "Anexo III"
+author: "Julio Ladron de Guevara Jimenez"
+date: "2023-09-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r}
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+```
+
+
+```{r setup, echo = FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  warning = FALSE, message = FALSE)
+```
+
+
+
+```{r}
+library(kableExtra)
+library(dplyr)
+library(caret)
+
+library(fastDummies)
+library(smotefamily)
+
+# l-regression
+library(MASS)
+
+# K-neighbours
+library(pROC)
+library(FNN)
+
+# Decision tree
+library(rpart.plot)
+library(rpart)
+
+# Random-Forest
+library(randomForest)
+
+```
+
+
+# 3) Modelos de clasificacion
+
+## 3.0) Pretratamiento de los datos
+
+Una vez hemos hecho el análisis exploratorio de las variables y nos quedamos con las variables necesarias, hacemos los modelos de clasificacion
+
+ 
+
+```{r}
+
+datos <- read.csv("/home/guincho/Desktop/stroke_final.csv")
+
+
+
+
+``` 
+
+
+
+
+
+### Pasamos a factorial
+
+Gracias a la función str(), vemos que las variables categóricas están guardadas en forma de int o chr. Esto puede causar fallos en el modelo de regresión logistica en R. Así que las pasamos todas a factor.
+
+d_negativo significará diagnóstico negativo y d_positivo diangnóstico positivo
+
+```{r}
+str(datos)
+
+datos$smoking_status <- gsub(" ", "_", datos$smoking_status)
+datos$work_type <- gsub(" ", "_", datos$work_type)
+datos$work_type <- gsub("-", "_", datos$work_type)
+
+
+datos$stroke = ifelse(test = datos$stroke == 0, 
+                      yes = "D_negativo", no = "D_positivo")
+datos$stroke = as.factor(datos$stroke)
+
+
+datos$hypertension = ifelse(test = datos$hypertension == 0,
+                            yes = "No_hipertenso", no = "Hipertenso")
+datos$hypertension = as.factor(datos$hypertension)
+
+
+datos$heart_disease = ifelse(test = datos$heart_disease == 0,
+                             yes = "Enf_coronaria_negativa", 
+                             no = "Enf_coronaria_positiva")
+datos$heart_disease = as.factor(datos$heart_disease)
+
+
+datos$ever_married = ifelse(test = datos$ever_married == 0, 
+                            yes = "Nunca_casado", 
+                            no = "Casado")
+datos$ever_married = as.factor(datos$ever_married)
+
+datos$work_type = as.factor(datos$work_type)
+
+datos$smoking_status = as.factor(datos$smoking_status)
+
+
+str(datos)
+
+```
+
+
+### Creando variables dummy
+
+Para algunos modelos de predicción las entradas deben ser numéricas. Es para ello que creamos variables dummy. Para representar información categórica en formato numérico. 
+
+Para ello vamos a utilizar un paquete llamado fastDummies
+
+Dejamos Stroke como factor
+
+```{r}
+
+datos_dummies  <- dummy_cols(datos, remove_first_dummy = TRUE,
+                             select_columns = c("hypertension",
+                                                "heart_disease", "ever_married", 
+                                                "work_type","smoking_status"),
+                             remove_selected_columns = TRUE)
+
+
+str(datos_dummies)
+
+
+```
+
+### Dividimos en subconjunto train y test
+
+Ahora dividimos nuestro dataset datos_dummies en un subconjunto train y otro test. Fijamos la semilla 
+
+Hacemos esta operación la primera. Porque vamos a manipular los datos de train. Sin embargo, no queremos manipular los datos de test. Vamos a usarlos al final para evaluar el rendimiento de nuestros modelos
+
+```{r}
+set.seed(123)
+
+train = createDataPartition(y = datos_dummies$stroke,
+                            p = 0.8,
+                            list = FALSE)
+
+train_dummies = datos_dummies[train, ]
+test_dummies = datos_dummies[-train, ]
+
+table(train_dummies$stroke)
+table(test_dummies$stroke)
+``` 
+
+
+### Escalar las variables continuas
+
+
+La estandarización es una técnica comúnmente utilizada en la regresión logística para asegurarnos de que las variables independientes (predictoras) tengan la misma escala. Esto puede ser beneficioso porque la regresión logística se basa en la función logística, que es sensible a la escala de las variables. Al estandarizar las variables, podemos comparar más fácilmente el impacto relativo de cada variable en el modelo y garantizar que los coeficientes sean más interpretables.
+
+
++ $X_{\text{estandarizado}}$ es el valor estandarizado
++ X es el valor original de la variable.
++ $\mu$ es la media de la variable.
++ $\sigma$ es la desviación estándar de la variable.
+
+$$
+X_{\text{estandarizado}} = \frac{X - \mu}{\sigma}
+$$
+
+
+```{r}
+
+
+train_dummies_N <- train_dummies %>%
+  mutate(
+    bmi = scale(bmi, center = TRUE, scale = TRUE),
+    age = scale(age, center = TRUE, scale = TRUE),
+    avg_glucose_level = scale(avg_glucose_level, center = TRUE, scale = TRUE)
+  )
+
+
+str(train_dummies_N)
+
+
+test_dummies_N = test_dummies %>%
+  mutate(
+    bmi = scale(bmi, center = TRUE, scale = TRUE),
+    age = scale(age, center = TRUE, scale = TRUE),
+    avg_glucose_level = scale(avg_glucose_level, center = TRUE, scale = TRUE)
+  )
+
+str(test_dummies_N)
+``` 
+
+
+
+
+### Balancear
+
+Como hemos visto, tenemos una cantidad mucho mayor de Diagnósticos negativos que positivos. Para arreglar esto es necesario rebalancear. 
+
+Vamos a usar la funcion SMOTE de smotefamily. 
+
+SMOTE (Synthetic Minority Over-sampling Technique) es una técnica de sobre-muestreo que ayuda a abordar el desequilibrio de clases en conjuntos de datos. En lugar de simplemente duplicar los datos de la clase minoritaria, SMOTE crea instancias sintéticas que son combinaciones lineales de ejemplos de la clase minoritaria existente. Esto ayuda a mitigar el sesgo que podría surgir si simplemente replicáramos los datos originales.
+
+Al generar muestras sintéticas, SMOTE se asegura de mantener la estructura y las características de los datos originales, lo que resulta en un conjunto de datos balanceado
+
+
+```{r}
+
+
+target <- train_dummies_N$stroke
+
+
+X <- train_dummies_N[, !names(train_dummies_N) %in% "stroke"]
+
+
+X_smote <- SMOTE(X, target, K = 5, dup_size = 0)
+
+
+```
+
+
+
+
+
+
+SMOTE genera una lista con 10 elementos. Entre ellos está:
+
++ $data El conjunto de datos resultante consta de instancias minoritarias originales, instancias minoritarias sintéticas e instancias mayoritarias originales, con un vector de sus respectivas clases objetivo adjunto en la última columna.
++ $syn_data Un conjunto de instancias minoritarias sintéticas con un vector de la clase objetivo minoritaria adjunto en la última columna
++ $orig_N Un conjunto de instancias originales cuya clase no ha sido sobre-muestreada, con un vector de su clase objetivo adjunto en la última columna.
++ $orig_P: Un conjunto de instancias originales cuya clase ha sido sobre-muestreada, con un vector de su clase objetivo adjunto en la última columna.
+
+A nosotros el que mas nos interesa es data. Las nuevas están guardadas en la columna class
+
+SMOTE también cambia el tipo de todas las variables a num
+
+Queremos que las que eran int sigan siendolo
+
+
+```{r}
+
+X_new = X_smote$data
+
+table(X_new$class)
+
+table(X_smote$syn_data$class) #Para ver cuantos nuevos hay
+```
+
+
+
+```{r}
+#Le damos el nombre stroke a la columna class
+names(X_new)[names(X_new) == "class"] <- "stroke"
+
+X_new$stroke = as.factor(X_new$stroke)
+
+str(X_new)
+
+```
+
+
+
+## 3.1) Regresion logistica
+
+
+### 3.1.a) Glm con y sin SMOTE
+
+Vamos a ver que glm es mejor. Si la que tiene dummies y el SMOTE o la entrenamiento_dummies sin SMOTE.
+
+
+```{r}
+
+
+
+#sin SMOTE
+X_glm_1 = train_dummies_N
+
+#Con SMOTE
+X_glm_2 = X_new
+
+
+
+logistico1 = glm(stroke~., data =  X_glm_1, family = binomial)
+
+logistico2 = glm(stroke~., data =  X_glm_2, family = binomial)
+
+
+
+```
+
+
+```{r}
+
+logistico1
+
+logistico2
+
+```
+
+
+
+
+```{r}
+
+summary(logistico1)
+
+```
+Este modelo es el resultado de 14 iteraciones
+
+El paquete MASS tiene una funcion llamada stepAIC
+
+Esta función lleva a cabo una búsqueda automática para determinar el subconjunto óptimo de predictores que deben incluirse en el modelo final, con el objetivo de minimizar un criterio de selección específico, como el AIC 
+
+```{r}
+
+# stepAIC(logistico1)
+# stepAIC(logistico2)
+```
+
+este es el AIC mas pequeño que ha salido
+
+Call:  glm(formula = stroke ~ age + avg_glucose_level + hypertension_No_hipertenso + 
+    heart_disease_Enf_coronaria_positiva + work_type_Self_employed + 
+    smoking_status_never_smoked, family = binomial, data = X_glm_1)
+
+Coefficients: 1)intercept: -3.5678;   2)age: 1.5949;  3)avg_glucose_level: 0.1917;
+4) Hypertension_No_hipertenso: -0.2825;      5)heart_disease_Enf_coronaria_positiva:  0.3072;   
+6) work_type_Self_employed: -0.4181;   7) smoking_status_never_smoked: -0.2974  
+
+Degrees of Freedom: 4088 Total (i.e. Null);  4082 Residual Null Deviance:	    1597 
+Residual Deviance: 1286 	AIC: 1300
+
+Mejora un poco el AIC, pero la devianza residual empeora un poco comparado con logistico1
+
+
+```{r}
+
+
+
+logistico = glm(formula = stroke ~ age + avg_glucose_level + hypertension_No_hipertenso + 
+                  heart_disease_Enf_coronaria_positiva + work_type_Self_employed + 
+                  smoking_status_never_smoked, family = binomial, data = X_glm_1,
+                                  control = list(maxit = 10))
+
+
+# Modelo sin SMOTE, pero con mejor AIC
+summary(logistico)
+
+# Modelo con SMOTE
+summary(logistico2)
+```
+
+### 3.1.b) Matriz de confusion y evaluacion del modelo
+
+```{r}
+
+predicciones1 <- predict(logistico, newdata = test_dummies_N, type = "response")
+
+predicciones2 <- predict(logistico2, newdata = test_dummies_N, type = "response")
+
+```
+
+
+```{r}
+
+predicciones_clases1 <- ifelse(predicciones1 > 0.5, 1, 0)
+
+predicciones_clases2 <- ifelse(predicciones2 > 0.5, 1, 0)
+
+# Crear la matriz de confusión
+confusion_matrix1 <- table(Real = test_dummies_N$stroke, Prediccion = predicciones_clases1)
+
+confusion_matrix2 <- table(Real = test_dummies_N$stroke, Prediccion = predicciones_clases2)
+
+# Mostrar la matriz de confusión
+print(confusion_matrix1)
+
+print(confusion_matrix2)
+
+str(confusion_matrix2)
+```
+
+### 3.1.c) Evaluacion del  modelo
+
+La primera matriz de confusion que toma los valores de las predicciones de la glm realizada con los datos sin SMOTE demuestra que al haber un desbalance tan grande de los datos es necesario hacer SMOTE. 
+
+La segunda matriz se ha hecho con los datos sintéticos del SMOTE.
+
+Verdaderos negativos: Cantidad de negativos que fueron clasificados correctamente -> 723
+Falsos negativos -> Cantidad de positivos que fueron clasificados incorrectamente como negativos -> 249
+
+Falsos positivos -> Negativos clasificados incorrectamente como positivos
+Verdaderos positivos -> Positivos clasificados como positivos
+
+#### Indicadores de evaluacion
+
+Metricas para comparar el rendimiento de modelos
+
+Exactitud:: Accuracy = (VP+VN) / Total
+Sensibilidad = VP / (Total positivos)
+Especificidad = VN / (Total negativos)
+
+```{r}
+VP <- confusion_matrix2["D_positivo", "1"]
+VN <- confusion_matrix2["D_negativo", "0"]
+FP <- confusion_matrix2["D_negativo", "1"]
+FN <- confusion_matrix2["D_positivo", "0"]
+
+# Calcular la precisión, sensibilidad y especificidad
+accuracy <- (VP + VN) / (FP + FN + VP + VN)
+sensitivity <- VP / (VP + FN)
+specificity <- VN / (VN + FP)
+
+cat("Precisión (Accuracy):", round(accuracy * 100, 2), "%\n")
+cat("Sensibilidad (Sensitivity):", round(sensitivity*100, 2), "%\n")
+cat("Especificidad (Specificity):", round(specificity*100, 2), "%\n")
+
+
+roc_obj <- roc(test_dummies_N$stroke, as.numeric(predicciones_clases2))
+
+#str(roc_obj)
+
+auc_value <- auc(roc_obj)
+ 
+cat("Área bajo la curva ROC (AUC):", auc_value, "\n")
+
+
+
+
+```
+
+En resumen, este modelo tiene una precisión aceptable (74.53%) y un rendimiento relativamente equilibrado en términos de sensibilidad y especificidad. El AUC de 0.7596687 sugiere que el modelo tiene un rendimiento mejor que el azar, pero no es extremadamente alto.
+
+
+## 3.2) K-Nearest Neighbors
+
+### 3.2.a) Teoria
+
++ Se buscan K registros con características similares:
+
+En este paso, se identifican los K registros del conjunto de entrenamiento que tienen características más cercanas a las del nuevo registro. Esto se hace utilizando una métrica de distancia, como la distancia euclidiana o la distancia de Mahalanobis.
+
++ Para clasificar, asignamos la clase mayoritaria entre los registros similares al nuevo registro:
+
+Una vez que se han identificado los K registros más cercanos, se observa la clase a la que pertenecen. Luego, se asigna al nuevo registro la clase que es más común entre esos K registros.
+
++ Para pronosticar, hallamos el promedio entre los registros similares y pronosticamos ese promedio para el nuevo registro:
+
+Se calcula el promedio de la variable objetivo de los K registros más cercanos y se asigna ese valor como pronóstico para el nuevo registro.
+
+
+#### Metricas de distancias
+
+Cuando se trabaja con variables dummy (one-hot encoded) en algoritmos como k-NN, la medida de distancia más comúnmente utilizada es la Distancia de Hamming.
+
+Sin embargo, en algunos casos, cuando hay una combinación de variables numéricas y dummy, se puede considerar una métrica de distancia que combine medidas para ambos tipos de variables. Por ejemplo, la Distancia Euclidiana Ponderada.
+
+
+#### Normalizacion
+
+#### Eleccion de K
+
+
+
+### 3.2.b) Implementando K-N Neighbors
+
+La función que usaremos para K-NN es del paquete FNN.
+
+Definimos cuáles son los valores que vamos a introducir en la funcion
+
+```{r}
+
+knn_train = X_new
+knn_test = test_dummies_N
+
+x_train = knn_train[, -which(names(knn_train) == "stroke")]
+x_test = knn_test[, -which(names(knn_test) == "stroke")]
+
+y_train = knn_train$stroke
+y_test  = knn_test$stroke 
+
+#y_train = ifelse(y_train == "D_negativo", 0, 1)
+#y_test = ifelse(y_test == "D_negativo", 0, 1)
+  
+
+```
+
+
+
+
+Según la K que tomemos, cambia mucho la accuracy. Asi que vamos a usar un metodo para encontrar la K con mayor accuracy
+
+
+Usaremos un metodo de validacion cruzada para encontrar la k 
+
+
+```{r}
+set.seed(123)
+
+kfold = trainControl(method = "cv", number = 10)
+knn_model = train(x = x_train, y = y_train, method = "knn", trControl = kfold, 
+                  tuneGrid = expand.grid(k = 1:20))
+
+```
+
+
+```{r}
+#knn_model
+
+plot(knn_model)
+
+
+knn_stroke <- knn(train = x_train, test = x_test, cl = y_train, k = 1)
+ 
+confusion_matrix <- confusionMatrix(knn_stroke, y_test)
+
+confusion_matrix
+
+```
+
+
+```{r}
+
+
+accuracy <- confusion_matrix$overall["Accuracy"]
+sensitivity <- confusion_matrix$byClass["Sensitivity"]
+specificity <- confusion_matrix$byClass["Specificity"]
+
+cat("Precisión (Accuracy):", round(accuracy * 100, 2), "%\n")
+cat("Sensibilidad (Sensitivity):", round(sensitivity*100, 2), "%\n")
+cat("Especificidad (Specificity):", round(specificity*100, 2), "%\n")
+
+
+roc_obj <- roc(test_dummies_N$stroke, as.numeric(knn_stroke))
+
+auc_value <- auc(roc_obj)
+ 
+cat("Área bajo la curva ROC (AUC):", auc_value, "\n")
+
+
+```
+
+La especificidad es muy baja, y el area bajo la curva ROC es muy cercana a 0.5
+
+El AUC es relativamente bajo, lo que sugiere que el modelo podría no estar funcionando tan bien en la clasificación.
+
+### 3.2.c) Optimizando
+
+Vamos a optimizar la eleccion de K, para que salga la mejor AUC
+
+```{r}
+
+set.seed(123)
+
+# Definir el control de entrenamiento
+kfold = trainControl(method = "cv", number = 10, summaryFunction = twoClassSummary, classProbs = TRUE, 
+                     savePredictions = TRUE)
+
+# Entrenar el modelo k-NN con optimización de AUC y k de 1 a 100 de 5 en 5
+knn_model = train(x = x_train, y = y_train, method = "knn", trControl = kfold, 
+                  tuneGrid = expand.grid(k = seq(1, 100, by = 5)), metric = "ROC")
+
+# Ver los resultados
+print(knn_model)
+
+# Obtener la mejor configuración de k
+best_k <- knn_model$bestTune$k
+
+
+```
+```{r}
+plot(knn_model)
+```
+Parece que la mejor nos la da k = 6
+
+### 3.2.d) Matriz de confusion y evaluacion del modelo
+
+```{r}
+knn_stroke <- knn(train = x_train, test = x_test, cl = y_train, k = 6)
+ 
+confusion_matrix <- confusionMatrix(knn_stroke, y_test)
+
+print(confusion_matrix)
+
+accuracy <- confusion_matrix$overall["Accuracy"]
+sensitivity <- confusion_matrix$byClass["Sensitivity"]
+specificity <- confusion_matrix$byClass["Specificity"]
+
+cat("Precisión (Accuracy):", round(accuracy * 100, 2), "%\n")
+cat("Sensibilidad (Sensitivity):", round(sensitivity*100, 2), "%\n")
+cat("Especificidad (Specificity):", round(specificity*100, 2), "%\n")
+
+
+roc_obj <- roc(test_dummies_N$stroke, as.numeric(knn_stroke))
+
+auc_value <- auc(roc_obj)
+ 
+cat("Área bajo la curva ROC (AUC):", auc_value, "\n")
+
+```
+
+La precision y la sensibilidad han disminuido, pero han aumentado la especificidad y el área bajo la curva ROC
+
+
+La especificidad sigue siendo relativamente baja, situándose en un 40.82%, lo que indica que el modelo tiene dificultades para identificar correctamente los casos negativos. El AUC de 0.6294932 sugiere que el modelo supera al azar en términos de rendimiento, pero sigue siendo más bajo que la regresion logarítmica
+
+## 3.3) Arbol de decisión 
+
+Los modelos de árbol son un método de clasificación desarrollado por Leo Breiman en 1984.
+
+Los datos se someten a particion repetidamente utilizando valores predictivos que hacen lo mejor posible el trabajo de separar los datos en particiones relativamente homogéneas.
+
+Un árbol completamente desarrollado da como resultado hojas puras. 100% de acierto sobre los datos sobre los que ha sido entrenado => Hemos sobreajustado
+
+Evitamos dividir una partición si una subpartición es demasiado pequeña o una hoja terminal es demasiado pequeña. En rpart estas restricciones se controlan mediante los parámetros minsplit y minbucket. Con valores predeterminados de 20 y 7.
+
+No dividimos una particion si la nueva particion no reduce significativamente laimpureza. En rpart esta decision la controla el parametro de complejidad cp. Es una medida de lo complejo que es el árbol. En la práctica cp se usa para limitar el crecimiento de un árbol agregando una penalización a la complejidad adicional.
+
+El valor predetermiando en rpart es 0.01
+
+### 3.3.a) Implementando el árbol de decision
+
+```{r}
+
+tree = rpart(stroke ~., data = X_new)
+
+```
+
+La forma más comun de estimar un buen valor de cp es mediante validación cruzada. En rpart podemos usar el argumento cptable para producir una tabla de valores de cp y su error de validacion cruzada asociado (xerror), a partir del cual podemos determinar el valor de cp que tiene el error de validacion cruzada mas bajo.
+
+
+```{r}
+# Definir el control para el entrenamiento del modelo
+control <- trainControl(method = "cv", number = 10)  # Validación cruzada con 10 folds
+
+# Definir la cuadrícula de hiperparámetros para buscar
+grid <- expand.grid(cp = seq(0.001, 0.1, by = 0.001))  # Valores de cp a considerar
+
+# Entrenar el modelo con la selección de cp
+model <- train(stroke ~ ., data = X_new, method = "rpart", trControl = control, tuneGrid = grid)
+
+# Imprimir el mejor valor de cp
+print(paste("El mejor valor de cp es:", model$bestTune$cp))
+
+
+```
+
+### 3.3.b) Matriz de confusion y evaluacion del modelo
+
+```{r}
+
+tree = rpart(stroke ~. , data = X_new, control = rpart.control(cp = 0.001))
+
+
+rpart.plot(tree, box.palette="auto", shadow.col="gray", nn=TRUE)
+
+predictions <- predict(tree, test_dummies_N, type = "class")
+
+confusion_matrix <- confusionMatrix(predictions, test_dummies_N$stroke)
+
+print(confusion_matrix)
+
+```
+
+```{r}
+
+
+accuracy <- confusion_matrix$overall["Accuracy"]
+sensitivity <- confusion_matrix$byClass["Sensitivity"]
+specificity <- confusion_matrix$byClass["Specificity"]
+
+cat("Precisión (Accuracy):", round(accuracy * 100, 2), "%\n")
+cat("Sensibilidad (Sensitivity):", round(sensitivity*100, 2), "%\n")
+cat("Especificidad (Specificity):", round(specificity*100, 2), "%\n")
+
+
+roc_obj <- roc(test_dummies_N$stroke, as.numeric(predictions))
+
+auc_value <- auc(roc_obj)
+ 
+cat("Área bajo la curva ROC (AUC):", auc_value, "\n")
+
+
+
+```
+
+
+Esto modelos tiene una precisión del 80.61% y una sensibilidad del 81.58% es bastante sólido. Sin embargo, la especificidad del 61.22% es un poco más baja que el primero modelo de regresion logística, lo que significa que el modelo tiene más dificultades para identificar correctamente los casos negativos.
+
+El AUC de 0.714 es relativamente bueno. En general, un AUC por encima de 0.7 indica un rendimiento superior al azar
+
+Los modelos de árboles de decision pueden proporcionar una idea visual para explorar los datos, para tener una idea de que variables son importantes y como se relacionan entre si. Los árboles pueden capturar relaciones no lineales entre variables predictoras.
+
+En cuanto al pronóstico, utilizar varios árboles suele ser más eficaz. Entre este tipo de algoritmos con varios árboles se encuentra uno llamado bosque aleatorio
+
+## 3.4) Random forest (bosque aleatorio)
+
+### 3.4.a) Matriz de confusion y evaluacion del modelo
+
+```{r}
+
+r_forest = randomForest(stroke ~. , data = X_new, ntree= 500)
+
+predictions <- predict(r_forest, test_dummies_N, type = "class")
+
+confusion_matrix <- confusionMatrix(predictions, test_dummies_N$stroke)
+
+confusion_matrix
+``` 
+
+```{r}
+
+accuracy <- confusion_matrix$overall["Accuracy"]
+sensitivity <- confusion_matrix$byClass["Sensitivity"]
+specificity <- confusion_matrix$byClass["Specificity"]
+
+cat("Precisión (Accuracy):", round(accuracy * 100, 2), "%\n")
+cat("Sensibilidad (Sensitivity):", round(sensitivity*100, 2), "%\n")
+cat("Especificidad (Specificity):", round(specificity*100, 2), "%\n")
+
+
+roc_obj <- roc(test_dummies_N$stroke, as.numeric(predictions))
+
+auc_value <- auc(roc_obj)
+ 
+cat("Área bajo la curva ROC (AUC):", auc_value, "\n")
+
+
+
+```
+
+Es un modelo que no mejora al arbol de decision
