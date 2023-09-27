@@ -48,7 +48,7 @@ library(rcompanion)
 
 
 
-# Estudio de significancia de variables y creacion del modelo predictivo
+# Análisis exploratorio
 
 Lo primero que vamos a hacer es cargar el dataset. 
 
